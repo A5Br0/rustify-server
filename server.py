@@ -7,8 +7,10 @@ Rustify WebSocket Server v2.0 - Maximum Performance Edition
 - Batch WebSocket writes per tick
 - 200+ items, full game mechanics
 """
-import asyncio, struct, math, time, random, os, json, urllib.request
+import asyncio, struct, math, time, random, os, json
 from collections import defaultdict
+from aiohttp import web, WSMsgType
+import aiohttp
 
 PORT = int(os.environ.get("PORT", "7777"))
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
@@ -300,9 +302,14 @@ class Entity:
         self.yaw, self.hp, self.owner = yaw, hp, owner
 
     def snap(self):
+        # Building pieces offset by 128 to avoid collision with item IDs
+        snap_typ = self.typ
+        if snap_typ < 100 and snap_typ not in (1, 2, 3):
+            # It's a building piece (0-26), offset it
+            snap_typ += 128
         return struct.pack("<IhhhBBB", self.id,
                            qpos(self.x), qpos(self.y), qpos(self.z),
-                           qyaw(self.yaw), self.typ,
+                           qyaw(self.yaw), snap_typ,
                            max(0, min(255, int(self.hp))))
 
 
@@ -567,7 +574,7 @@ class WorldInstance:
         # Inventory
         inv_data = struct.pack("<H", len(pl.inv))
         for iid, amt in pl.inv.items():
-            inv_data += struct.pack("<BH", iid & 0xFF, min(65535, amt))
+            inv_data += struct.pack("<HH", iid & 0xFFFF, min(65535, amt))
         batch += struct.pack("B", 0x83) + inv_data
         # Day time
         batch += struct.pack("<Bf", 0x86, self.day_time)
@@ -817,8 +824,6 @@ INSTANCES = {
 
 
 # ── WebSocket handler ──────────────────────────────────────────────────────────
-from aiohttp import web, WSMsgType
-
 async def handle_ws(request):
     key = request.match_info.get("server_key", "vanilla1")
     instance = INSTANCES.get(key)
