@@ -302,10 +302,8 @@ class Entity:
         self.yaw, self.hp, self.owner = yaw, hp, owner
 
     def snap(self):
-        # Building pieces offset by 128 to avoid collision with item IDs
         snap_typ = self.typ
-        if snap_typ < 100 and snap_typ not in (1, 2, 3):
-            # It's a building piece (0-26), offset it
+        if snap_typ < 100:
             snap_typ += 128
         return struct.pack("<IhhhBBB", self.id,
                            qpos(self.x), qpos(self.y), qpos(self.z),
@@ -840,8 +838,16 @@ async def handle_ws(request):
     raw_name = msg.data[1:].split(b"\x00")[0][:16].decode("utf-8", errors="replace") or "Player"
 
     p = await instance.add_player(raw_name, ws)
-    await ws.send_bytes(struct.pack("B", 0x85) + struct.pack("<I", p.id))
     await ws.send_bytes(struct.pack("B", 0x84) + f"Welcome to {instance.name}!".encode())
+    await ws.send_bytes(struct.pack("B", 0x85) + struct.pack("<I", p.id))
+    await ws.send_bytes(struct.pack("B", 0x84) + b"Press TAB for inventory, T for chat")
+    name_b = p.name.encode()
+    for o in instance.players.values():
+        if o.id != p.id and o.ws:
+            try:
+                await o.ws.send_bytes(struct.pack("<BHI", 0x8D, p.id, len(name_b)) + name_b)
+            except Exception:
+                pass
     # Send monuments info
     mon_json = json.dumps([{"name": m["name"], "x": m["x"], "y": m["y"]} for m in MONUMENTS])
     await ws.send_bytes(struct.pack("B", 0x8B) + mon_json.encode())
