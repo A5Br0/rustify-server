@@ -315,7 +315,8 @@ class Player:
     __slots__ = ("id","name","x","y","z","yaw","hp","ws","inv",
                  "cal","hyd","rad","temp","dead","respawn","wpn","last_input",
                  "stamina","bleeding","bleed_rate","status_effects","kills","deaths",
-                 "last_seen","ping","team_id")
+                 "last_seen","ping","team_id",
+                 "in_fwd","in_strf","in_sprint","in_sneak","in_jump","input_dirty")
     def __init__(self, pid, name, ws):
         a, b = random.uniform(50, 600), random.uniform(0, math.tau)
         x, y = math.cos(b) * a, math.sin(b) * a
@@ -335,6 +336,14 @@ class Player:
         self.last_seen = {}  # entity_id -> snap_bytes (for delta)
         self.ping = 0
         self.team_id = None
+        # Buffered movement input — applied once per tick in simulate(), not
+        # per-packet, so the player speed is independent of client FPS / send rate.
+        self.in_fwd = 0.0
+        self.in_strf = 0.0
+        self.in_sprint = False
+        self.in_sneak = False
+        self.in_jump = False
+        self.input_dirty = False
 
     def snap(self):
         return struct.pack("<IhhhBBB", self.id,
@@ -689,6 +698,28 @@ class WorldInstance:
                     except Exception:
                         pass
 
+                # Apply buffered movement input exactly once per tick. This keeps
+                # the player's speed tied to the server tick rate instead of the
+                # client's packet send rate (which made movement far too fast).
+                if not p.dead and p.input_dirty:
+                    fwd = p.in_fwd
+                    strf = p.in_strf
+                    if p.in_sprint and p.stamina > 0:
+                        spd = 380.0
+                        p.stamina = max(0.0, p.stamina - 20.0 * TICK)
+                        if p.stamina <= 0:
+                            spd = 270.0
+                    elif p.in_sneak:
+                        spd = 250.0
+                    else:
+                        spd = 270.0
+                    old_x, old_y = p.x, p.y
+                    p.x += (math.sin(p.yaw) * fwd + math.cos(p.yaw) * strf) * spd * TICK
+                    p.y += (math.cos(p.yaw) * fwd - math.sin(p.yaw) * strf) * spd * TICK
+                    gz = height(p.x, p.y)
+                    p.z = gz + 1.0
+                    self.player_grid.move(p, old_x, old_y, p.x, p.y)
+
             # Resource respawn
             for r in self.resources:
                 if r.amount <= 0:
@@ -875,20 +906,15 @@ async def handle_ws(request):
                 sprinting = bool(flags & 0x02)
                 sneaking = bool(flags & 0x04)
 
-                if not p.dead:
-                    spd = (380.0 if sprinting else 250.0 if sneaking else 270.0)
-                    if sprinting:
-                        p.stamina = max(0.0, p.stamina - 20.0 * TICK * 30)
-                        if p.stamina <= 0:
-                            spd = 270.0  # cant sprint without stamina
-
-                    p.yaw = yaw
-                    old_x, old_y = p.x, p.y
-                    p.x += (math.sin(yaw) * fwd + math.cos(yaw) * strf) * spd * TICK
-                    p.y += (math.cos(yaw) * fwd - math.sin(yaw) * strf) * spd * TICK
-                    gz = height(p.x, p.y)
-                    p.z = gz + 1.0
-                    instance.player_grid.move(p, old_x, old_y, p.x, p.y)
+                # Buffer the latest input; movement is applied once per tick in
+                # simulate() so speed stays correct regardless of packet rate.
+                p.in_fwd = fwd
+                p.in_strf = strf
+                p.yaw = yaw
+                p.in_sprint = sprinting
+                p.in_sneak = sneaking
+                p.in_jump = jumping
+                p.input_dirty = True
 
             # ── 0x03  FIRE ──
             elif op == 0x03 and len(buf) >= 13:
