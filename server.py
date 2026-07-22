@@ -286,12 +286,22 @@ def noise(x, y):
     n = (int(x) * 374761393 ^ int(y) * 668265263) & 0xFFFFFFFF
     return ((n ^ (n >> 13)) * 1274126177 & 0xFFFFFF) / 0xFFFFFF
 
+def _smooth(x, y):
+    ix, iy = int(x), int(y)
+    fx, fy = x - ix, y - iy
+    sx = fx * fx * (3.0 - 2.0 * fx)
+    sy = fy * fy * (3.0 - 2.0 * fy)
+    n00 = noise(ix, iy);     n10 = noise(ix + 1, iy)
+    n01 = noise(ix, iy + 1); n11 = noise(ix + 1, iy + 1)
+    return (n00 * (1 - sx) + n10 * sx) * (1 - sy) + (n01 * (1 - sx) + n11 * sx) * sy
+
+
 def height(x, y):
     m = max(0.0, 1.0 - math.hypot(x, y) / WORLD_R)
-    h = (noise(x * 0.001, y * 0.001) * 320
-         + noise(x * 0.004, y * 0.004) * 100
-         + noise(x * 0.015, y * 0.015) * 35
-         + noise(x * 0.06,  y * 0.06)  * 12) * m
+    h = (_smooth(x * 0.001, y * 0.001) * 120
+         + _smooth(x * 0.004, y * 0.004) * 40
+         + _smooth(x * 0.015, y * 0.015) * 15
+         + _smooth(x * 0.06,  y * 0.06)  * 5) * m
     return h
 
 
@@ -375,7 +385,7 @@ class Animal:
         self.x, self.y, self.z = x, y, z
         self.yaw = random.uniform(0, math.tau)
         self.hp = 80.0 if typ == 2 else 60.0   # deer vs wolf
-        self.speed = 25.0 if typ == 2 else 55.0
+        self.speed = 4.0 if typ == 2 else 6.0
         self.dir = random.uniform(0, math.tau)
         self.state = "wander"   # wander / chase / flee
         self.target_id = None
@@ -647,22 +657,22 @@ class WorldInstance:
                 # Stamina regen
                 p.stamina = min(100.0, p.stamina + 8.0 * TICK)
 
-                # Hunger/thirst drain
-                p.cal = max(0.0, p.cal - 2.5 * TICK)
-                p.hyd = max(0.0, p.hyd - 3.5 * TICK)
+                # Hunger/thirst drain (slow survival rates, not instant death)
+                p.cal = max(0.0, p.cal - 0.06 * TICK)
+                p.hyd = max(0.0, p.hyd - 0.09 * TICK)
                 if p.cal <= 0:
-                    p.hp -= 35.0 * TICK
+                    p.hp -= 0.5 * TICK
                 if p.hyd <= 0:
-                    p.hp -= 40.0 * TICK
+                    p.hp -= 0.7 * TICK
 
                 # Temperature
                 night = self.day_time > 0.75 or self.day_time < 0.2
                 if night:
-                    p.temp = max(-10.0, p.temp - 1.5 * TICK)
+                    p.temp = max(-10.0, p.temp - 0.05 * TICK)
                 else:
-                    p.temp = min(30.0, p.temp + 0.5 * TICK)
+                    p.temp = min(30.0, p.temp + 0.04 * TICK)
                 if p.temp < 0:
-                    p.hp -= abs(p.temp) * 0.5 * TICK  # hypothermia
+                    p.hp -= abs(p.temp) * 0.05 * TICK  # hypothermia
 
                 # Bleeding
                 if p.bleeding:
@@ -682,7 +692,7 @@ class WorldInstance:
                 if p.hp <= 0:
                     p.dead = True
                     p.deaths += 1
-                    p.respawn = self.t + 30.0
+                    p.respawn = self.t + 5.0
                     self.player_grid.remove(p, p.x, p.y)
                     # Drop items
                     dropped = list(p.inv.items())[:10]  # drop first 10
@@ -705,14 +715,14 @@ class WorldInstance:
                     fwd = p.in_fwd
                     strf = p.in_strf
                     if p.in_sprint and p.stamina > 0:
-                        spd = 380.0
+                        spd = 9.0
                         p.stamina = max(0.0, p.stamina - 20.0 * TICK)
                         if p.stamina <= 0:
-                            spd = 270.0
+                            spd = 5.5
                     elif p.in_sneak:
-                        spd = 250.0
+                        spd = 2.5
                     else:
-                        spd = 270.0
+                        spd = 5.5
                     old_x, old_y = p.x, p.y
                     p.x += (math.sin(p.yaw) * fwd + math.cos(p.yaw) * strf) * spd * TICK
                     p.y += (math.cos(p.yaw) * fwd - math.sin(p.yaw) * strf) * spd * TICK
@@ -814,30 +824,45 @@ class WorldInstance:
             # Broadcast state every tick
             await self.broadcast()
 
-            # Supabase save every 60s
-            if self.t % 60.0 < TICK and SUPABASE_URL:
+            # Supabase save every 60s, else local file save so the world persists.
+            if self.t % 60.0 < TICK:
                 asyncio.create_task(self._save_world_async())
 
     async def _save_world_async(self):
-        if not SUPABASE_KEY:
-            return
-        data = json.dumps({
-            "id": self.key,
-            "t": self.t,
-            "players": len(self.players),
-            "buildings": len(self.buildings),
-        }).encode()
-        url = f"{SUPABASE_URL}/rest/v1/world_state"
-        headers = {
-            "apikey": SUPABASE_KEY,
-            "Authorization": f"Bearer {SUPABASE_KEY}",
-            "Content-Type": "application/json",
-            "Prefer": "resolution=merge-duplicates",
-        }
+        if SUPABASE_URL and SUPABASE_KEY:
+            data = json.dumps({
+                "id": self.key,
+                "t": self.t,
+                "players": len(self.players),
+                "buildings": len(self.buildings),
+            }).encode()
+            url = f"{SUPABASE_URL}/rest/v1/world_state"
+            headers = {
+                "apikey": SUPABASE_KEY,
+                "Authorization": f"Bearer {SUPABASE_KEY}",
+                "Content-Type": "application/json",
+                "Prefer": "resolution=merge-duplicates",
+            }
+            try:
+                import aiohttp
+                async with aiohttp.ClientSession() as sess:
+                    await sess.post(url, data=data, headers=headers, timeout=5)
+                return
+            except Exception:
+                pass
+        # Local fallback — persist buildings/resources so the world survives restarts.
         try:
-            import aiohttp
-            async with aiohttp.ClientSession() as sess:
-                await sess.post(url, data=data, headers=headers, timeout=5)
+            save = {
+                "t": self.t,
+                "day_time": self.day_time,
+                "buildings": [{"id": b.id, "x": b.x, "y": b.y, "z": b.z,
+                               "yaw": b.yaw, "typ": b.typ, "hp": b.hp,
+                               "tier": getattr(b, "tier", "Wood"),
+                               "owner": getattr(b, "owner", "")} for b in self.buildings],
+            }
+            path = os.path.join(os.path.dirname(__file__), f"save_{self.key}.json")
+            with open(path, "w") as f:
+                json.dump(save, f)
         except Exception:
             pass
 
