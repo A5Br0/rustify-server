@@ -320,7 +320,7 @@ class Player:
         a, b = random.uniform(50, 600), random.uniform(0, math.tau)
         x, y = math.cos(b) * a, math.sin(b) * a
         self.id, self.name, self.ws = pid, name, ws
-        self.x, self.y, self.z = x, y, height(x, y) + 60
+        self.x, self.y, self.z = x, y, height(x, y) + 1.0
         self.yaw, self.hp = 0.0, 100.0
         self.inv = {}
         self.cal, self.hyd, self.rad, self.temp = 85.0, 85.0, 0.0, 20.0
@@ -355,7 +355,7 @@ class ResourceNode:
                     "hemp": 9, "crude_oil": 10}
         typ = type_map.get(self.res_type, 5)
         return struct.pack("<IhhhBBB", self.id,
-                           qpos(self.x), qpos(self.y), 0,
+                           qpos(self.x), qpos(self.y), qpos(height(self.x, self.y)),
                            0, typ, min(255, self.amount))
 
 
@@ -560,7 +560,7 @@ class WorldInstance:
         if snap:
             batch += struct.pack("<BH", 0x81, cnt) + snap
         # Vitals
-        batch += struct.pack("<BBBBBBBb",
+        batch += struct.pack("<BBBBBbBB",
                              0x82,
                              max(0, min(255, int(pl.hp))),
                              max(0, min(255, int(pl.cal))),
@@ -622,7 +622,7 @@ class WorldInstance:
                         p.dead = False
                         a, b = random.uniform(50, 400), random.uniform(0, math.tau)
                         p.x, p.y = math.cos(b) * a, math.sin(b) * a
-                        p.z = height(p.x, p.y) + 60
+                        p.z = height(p.x, p.y) + 1.0
                         p.hp = 100.0
                         p.cal, p.hyd = 85.0, 85.0
                         p.rad, p.bleeding = 0.0, False
@@ -845,7 +845,13 @@ async def handle_ws(request):
     for o in instance.players.values():
         if o.id != p.id and o.ws:
             try:
-                await o.ws.send_bytes(struct.pack("<BHI", 0x8D, p.id, len(name_b)) + name_b)
+                await o.ws.send_bytes(struct.pack("<BIH", 0x8D, p.id, len(name_b)) + name_b)
+            except Exception:
+                pass
+            # Also tell the newly-joined player about the existing player's name.
+            try:
+                existing_b = o.name.encode()
+                await p.ws.send_bytes(struct.pack("<BIH", 0x8D, o.id, len(existing_b)) + existing_b)
             except Exception:
                 pass
     # Send monuments info
@@ -881,7 +887,7 @@ async def handle_ws(request):
                     p.x += (math.sin(yaw) * fwd + math.cos(yaw) * strf) * spd * TICK
                     p.y += (math.cos(yaw) * fwd - math.sin(yaw) * strf) * spd * TICK
                     gz = height(p.x, p.y)
-                    p.z = gz + 60
+                    p.z = gz + 1.0
                     instance.player_grid.move(p, old_x, old_y, p.x, p.y)
 
             # ── 0x03  FIRE ──
